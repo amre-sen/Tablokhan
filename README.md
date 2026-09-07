@@ -1,4 +1,4 @@
-````markdown
+
 # Tablokhan — Persian & Arabic OCR
 
 A lightweight OCR system for detecting and recognizing Persian and Arabic text from images.
@@ -644,7 +644,3 @@ Hugging Face:
 
 Apache License 2.0
 
-```
-
-یک نکته را حتماً قبل از commit نهایی اصلاح کن: `config.py` فعلی روی GitHub هنوز `CROP_MARGIN = 10` دارد، بنابراین بعد از commit مقدار `15`، README بالا را commit کن تا مستندات و کد دقیقاً یکسان باشند. :contentReference[oaicite:19]{index=19}
-```
