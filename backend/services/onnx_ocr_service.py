@@ -79,7 +79,7 @@ class ONNXOCRService:
         det_resize_long: int = 640,
         rec_height: int = 48,
         rec_width: int = 320,
-        crop_margin: int = 10,
+        crop_margin: int = 15,
     ) -> None:
         for path in (det_onnx_path, rec_onnx_path, rec_yaml_path):
             if not os.path.exists(path):
