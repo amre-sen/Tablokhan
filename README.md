@@ -1,49 +1,187 @@
 ````markdown
 # Tablokhan — Persian & Arabic OCR
 
-A lightweight OCR system for Persian and Arabic text detection and recognition.
+A lightweight OCR system for detecting and recognizing Persian and Arabic text from images.
 
-The project uses **PP-OCRv6 Medium FT** for text detection and **PP-OCRv5 Mobile** for text recognition. Both models are exported to **ONNX** and run with ONNX Runtime in the local version.
+Tablokhan combines a PP-OCRv6-based text detector with PP-OCRv5 Mobile text recognition, using ONNX Runtime as the common inference backend.
 
-## Features
+The project provides two application interfaces built on the same OCR core:
 
-- Persian and Arabic text OCR
-- PP-OCRv6 Medium FT text detection
-- PP-OCRv5 Mobile text recognition
-- ONNX Runtime inference
-- Polygon-based text cropping
-- Persian/Arabic reading order
-- Right-to-left ordering within the same text line
-- Multiline text output
-- FastAPI REST API for local use
-- Gradio interface for the Hugging Face demo
+- **Local:** FastAPI REST API + HTML frontend
+- **Hugging Face:** Gradio + ONNX
 
-## Pipeline
+The OCR pipeline, model configuration, reading order, cropping strategy, and recognition logic are shared between the two deployments.
+
+---
+
+## Overview
+
+Tablokhan is designed for Arabic-script OCR, with particular attention to Persian and Arabic reading order.
+
+The system processes an input image through the following pipeline:
 
 ```text
 Input Image
-    ↓
+      │
+      ▼
+Detection Preprocessing
+(LAB CLAHE + Resize + Normalization)
+      │
+      ▼
 PP-OCRv6 Medium FT
 ONNX Text Detection
-    ↓
-DBPostProcess
-    ↓
-Reading Order
+      │
+      ▼
+DB Post-Processing
+      │
+      ▼
+Quadrilateral Text Boxes
+      │
+      ▼
+Persian / Arabic Reading Order
 (top → bottom, right → left)
-    ↓
+      │
+      ▼
 Perspective Polygon Crop
-    ↓
+(CROP_MARGIN=15)
+      │
+      ▼
 PP-OCRv5 Mobile
 ONNX Text Recognition
-    ↓
+      │
+      ▼
+CTC Decoding
+      │
+      ▼
 Remove Empty Results
-    ↓
-"\n".join(...)
-    ↓
-Multiline Text
+      │
+      ▼
+Multiline OCR Text + Detection Metadata
 ````
 
-## Detection Configuration
+---
+
+## Features
+
+* Persian and Arabic text recognition
+* PP-OCRv6 Medium FT text detection
+* PP-OCRv5 Mobile text recognition
+* ONNX Runtime inference
+* Shared OCR core for local and Hugging Face deployments
+* Polygon-based perspective cropping
+* Persian/Arabic right-to-left reading order
+* Top-to-bottom line ordering
+* Multiline text output
+* Detection and recognition confidence scores
+* Automatic CUDA / CPU execution-provider selection
+* FastAPI REST API for local deployment
+* Browser-based local frontend
+* Gradio interface for Hugging Face Spaces
+
+---
+
+## Architecture
+
+The project separates the OCR engine from the application interfaces.
+
+```text
+                    ┌─────────────────────────┐
+                    │   Shared ONNX OCR Core   │
+                    │                         │
+                    │  ONNXOCRService         │
+                    │  ├─ Detection           │
+                    │  ├─ DB PostProcess      │
+                    │  ├─ Reading Order       │
+                    │  ├─ Perspective Crop    │
+                    │  └─ Recognition         │
+                    └────────────┬────────────┘
+                                 │
+                 ┌───────────────┴───────────────┐
+                 │                               │
+                 ▼                               ▼
+       ┌──────────────────┐            ┌──────────────────┐
+       │  Local Deployment │            │ Hugging Face     │
+       │                  │            │                  │
+       │ FastAPI          │            │ Gradio           │
+       │ HTML Frontend    │            │ ZeroGPU-compatible│
+       └──────────────────┘            └──────────────────┘
+```
+
+The central OCR implementation is located in:
+
+```text
+backend/services/onnx_ocr_service.py
+```
+
+This service is reused by both the local FastAPI application and the Hugging Face Gradio application. 
+
+---
+
+# Models
+
+## Text Detection
+
+**Model:** PP-OCRv6 Medium FT
+
+**Format:** ONNX
+
+The detector is responsible for locating text regions in the input image and produces quadrilateral polygons for detected text.
+
+## Text Recognition
+
+**Model:** PP-OCRv5 Mobile Recognition
+
+**Format:** ONNX
+
+The recognizer processes each cropped text region and performs CTC-based decoding using the character dictionary defined in `inference.yml`.
+
+Recognition input shape:
+
+```text
+[1, 3, 48, 320]
+```
+
+The decoder is configured for Arabic/Persian text processing with reverse decoding enabled. 
+
+---
+
+# Detection Pipeline
+
+Detection preprocessing uses:
+
+### CLAHE
+
+Contrast enhancement is applied to the **L channel of LAB color space**.
+
+```text
+clipLimit = 2.0
+tileGridSize = (8, 8)
+```
+
+### Resize
+
+The image is resized so that the longest side is limited to:
+
+```text
+640 pixels
+```
+
+The resulting dimensions are rounded to multiples of 32.
+
+### Normalization
+
+The detector uses RGB ImageNet normalization:
+
+```text
+mean = [0.485, 0.456, 0.406]
+std  = [0.229, 0.224, 0.225]
+```
+
+These preprocessing steps are implemented directly in the shared ONNX OCR service. 
+
+---
+
+# Detection Configuration
 
 The current detection configuration is:
 
@@ -55,101 +193,174 @@ DET_RESIZE_LONG = 640
 PADDING = 0
 ```
 
-Detection preprocessing includes CLAHE on the L channel in LAB color space:
+DB post-processing uses quadrilateral boxes:
 
-```text
-clipLimit = 2.0
-tileGridSize = (8, 8)
+```python
+DBPostProcess(
+    thresh=0.30,
+    box_thresh=0.40,
+    max_candidates=3000,
+    unclip_ratio=1.40,
+)
 ```
 
-## Recognition
-
-Recognition uses:
+The final post-processing mode is:
 
 ```text
-PP-OCRv5 Mobile
+box_type = "quad"
 ```
 
-with:
+
+
+---
+
+# Reading Order
+
+Persian and Arabic require a right-to-left reading order.
+
+Tablokhan does not simply sort detected boxes by their X coordinate.
+
+Instead, `reading_order.py` groups boxes into text lines using vertical interval containment and then applies:
 
 ```text
-Input height: 48
-Input width : 320
+1. Top → Bottom between lines
+2. Right → Left within the same line
 ```
 
-The recognition pipeline preserves the Persian/Arabic processing and CTC decoding used by the original model configuration.
+This is implemented using a union-find grouping strategy followed by line sorting. 
 
-## Reading Order
+This step is particularly important for multi-region images containing Persian or Arabic text.
 
-Detected text regions are ordered using the project's `reading_order.py`.
+---
 
-The reading order is:
+# Text Cropping
 
-1. Top to bottom
-2. Right to left for regions belonging to the same line
+Each detected quadrilateral is converted into a rectified perspective crop before recognition.
 
-This is important for Persian and Arabic text.
+The crop process:
 
-## Local Installation
+```text
+Detected Polygon
+      │
+      ▼
+Perspective Transformation
+      │
+      ▼
+Rectified Text Crop
+      │
+      ▼
+Border Extension
+      │
+      ▼
+Recognition
+```
 
-Clone the repository:
+The current target configuration uses:
+
+```python
+CROP_MARGIN = 15
+```
+
+The crop itself is performed with OpenCV perspective transformation and replicated borders. 
+
+---
+
+# Recognition Pipeline
+
+For each detected text region:
+
+1. A perspective crop is generated.
+2. The crop is passed to the PP-OCRv5 Mobile recognition preprocessor.
+3. The recognition ONNX model performs inference.
+4. CTC decoding converts model output into text.
+5. Arabic/Persian reverse decoding is enabled.
+6. Empty recognition results are discarded.
+
+The final recognized regions are then joined into multiline text:
+
+```python
+"\n".join(recognized_texts)
+```
+
+
+
+---
+
+# Output
+
+The OCR service returns both the final text and per-region metadata.
+
+Example:
+
+```json
+{
+  "success": true,
+  "processing_time_ms": 812.4,
+  "image_width": 1280,
+  "image_height": 720,
+  "text": "متن اول\nمتن دوم\nمتن سوم",
+  "boxes": [
+    {
+      "polygon": [
+        [100, 120],
+        [320, 120],
+        [320, 165],
+        [100, 165]
+      ],
+      "text": "متن اول",
+      "confidence": 0.9621,
+      "det_score": 0.9417
+    }
+  ],
+  "execution_provider": {
+    "detection": "CPUExecutionProvider",
+    "recognition": "CPUExecutionProvider"
+  }
+}
+```
+
+The actual API includes:
+
+* final OCR text
+* processing time
+* original image dimensions
+* recognized polygons
+* recognition confidence
+* detection score
+* active ONNX Runtime execution providers
+
+
+
+---
+
+# Local Deployment
+
+## 1. Clone the repository
 
 ```bash
 git clone https://github.com/amre-sen/Tablokhan.git
 cd Tablokhan
 ```
 
-Install the dependencies:
+## 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Download the model files:
+The local application uses FastAPI, Uvicorn, ONNX Runtime, OpenCV, PaddleX processing components, and the required OCR utilities. 
+
+## 3. Download model files
+
+The ONNX models are intentionally distributed through Hugging Face rather than committed directly to the GitHub repository.
+
+Run:
 
 ```bash
 python download_models.py
 ```
 
-The models are downloaded from Hugging Face rather than stored directly in this GitHub repository.
-
-## Local Usage
-
-Start the FastAPI application:
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8000
-```
-
-The browser interface sends images to:
-
-```text
-POST /ocr
-```
-
-## API Response
-
-The API returns a single multiline text field:
-
-```json
-{
-  "success": true,
-  "processing_time_ms": 812.4,
-  "text": "متن اول\nمتن دوم\nمتن سوم"
-}
-```
-
-Empty recognition results are removed before joining the final text.
-
-## Model Files
-
-The project expects:
+The script downloads:
 
 ```text
 models/
@@ -161,34 +372,131 @@ models/
     └── inference.yml
 ```
 
-Model files are not required to be committed to GitHub.
-Run:
+
+
+## 4. Start the server
 
 ```bash
-python download_models.py
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-to obtain them.
+Or:
 
-## Hugging Face Demo
+```bash
+python main.py
+```
 
-A live Gradio version of the ONNX pipeline is available on Hugging Face Spaces:
+
+
+## 5. Open the local interface
+
+```text
+http://127.0.0.1:8000
+```
+
+The local FastAPI application serves the HTML frontend directly from:
+
+```text
+frontend/index.html
+```
+
+The frontend supports image upload and sends OCR requests to the backend. 
+
+---
+
+# REST API
+
+## OCR
+
+```http
+POST /ocr
+```
+
+Upload an image as a multipart form-data file.
+
+Example with `curl`:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/ocr" \
+  -F "file=@image.jpg"
+```
+
+## Status
+
+```http
+GET /status
+```
+
+The status endpoint reports:
+
+* engine readiness
+* detection execution provider
+* recognition execution provider
+* active OCR configuration
+
+
+
+---
+
+# Execution Providers
+
+The ONNX service automatically checks available ONNX Runtime providers.
+
+Preferred order:
+
+```text
+CUDAExecutionProvider
+        ↓
+CPUExecutionProvider
+```
+
+When a compatible CUDA environment is available, ONNX Runtime attempts to use CUDA.
+
+Otherwise, the service automatically falls back to CPU execution. 
+
+TensorRT is **not required by the shared ONNX architecture**.
+
+---
+
+# Hugging Face Deployment
+
+A Gradio version of the same ONNX OCR pipeline is deployed on Hugging Face Spaces:
 
 **[https://huggingface.co/spaces/amre-sen/Tablokhan](https://huggingface.co/spaces/amre-sen/Tablokhan)**
 
-The Hugging Face version uses:
+The Hugging Face application uses:
 
 ```text
 Gradio
-+
+   +
 ONNX Detection
-+
+   +
 ONNX Recognition
 ```
 
-The OCR pipeline remains the same; only the application interface and hosting environment are different.
+The application reuses the same OCR service instead of maintaining a separate OCR implementation. 
 
-## Project Structure
+The difference between the two deployments is the application layer:
+
+```text
+Local
+FastAPI + HTML Frontend
+        │
+        ▼
+Shared ONNX OCR Core
+
+Hugging Face
+Gradio
+        │
+        ▼
+Shared ONNX OCR Core
+```
+
+This keeps model behavior and preprocessing consistent across environments.
+
+---
+
+# Project Structure
 
 ```text
 Tablokhan/
@@ -204,7 +512,11 @@ Tablokhan/
 │
 ├── models/
 │   ├── detection/
+│   │   └── PP-OCRv6_medium_FT.onnx
+│   │
 │   └── recognition/
+│       ├── inference.onnx
+│       └── inference.yml
 │
 ├── reading_order.py
 ├── main.py
@@ -215,24 +527,124 @@ Tablokhan/
 └── README.md
 ```
 
-## Runtime
+---
 
-The local application can use:
+# Configuration
 
-```text
-CUDAExecutionProvider
-```
-
-when a compatible NVIDIA GPU and ONNX Runtime GPU environment are available.
-
-Otherwise it can run with:
+Model paths, OCR parameters, recognition dimensions, and server settings are centralized in:
 
 ```text
-CPUExecutionProvider
+config.py
 ```
 
-The CPU version does not require TensorRT, but inference is slower.
+The configuration supports environment-variable overrides.
 
-## License
+Examples:
+
+```bash
+OCR_DET_THRESH
+OCR_DET_BOX_THRESH
+OCR_DET_UNCLIP_RATIO
+OCR_DET_RESIZE_LONG
+OCR_CROP_MARGIN
+OCR_REC_HEIGHT
+OCR_REC_WIDTH
+OCR_MODELS_DIR
+```
+
+
+
+---
+
+# Design Principles
+
+Tablokhan follows several practical design decisions:
+
+### One OCR Core
+
+Detection, cropping, reading order, and recognition are implemented once in the shared service.
+
+### Separate Application Layers
+
+The OCR engine is independent from the interface:
+
+```text
+OCR Core
+   ├── FastAPI + HTML
+   └── Gradio
+```
+
+### Models Outside Git History
+
+Large model binaries are downloaded from Hugging Face rather than unnecessarily storing them in Git history.
+
+### Model Initialization Once
+
+The local FastAPI application initializes the OCR service at startup so model sessions are reused across requests instead of being recreated for every image. 
+
+---
+
+# Current OCR Configuration
+
+| Component              | Configuration               |
+| ---------------------- | --------------------------- |
+| Detection              | PP-OCRv6 Medium FT          |
+| Detection format       | ONNX                        |
+| Recognition            | PP-OCRv5 Mobile             |
+| Recognition format     | ONNX                        |
+| Runtime                | ONNX Runtime                |
+| Detection threshold    | `0.30`                      |
+| Box threshold          | `0.40`                      |
+| Unclip ratio           | `1.40`                      |
+| Detection max side     | `640`                       |
+| Detection padding      | `0`                         |
+| CLAHE                  | LAB L-channel               |
+| CLAHE clip limit       | `2.0`                       |
+| CLAHE grid             | `(8, 8)`                    |
+| Recognition input      | `48 × 320`                  |
+| Crop margin            | `15`                        |
+| Reading order          | Top → Bottom / Right → Left |
+| Detection boxes        | Quadrilateral               |
+| Recognition decoder    | CTC                         |
+| Arabic/Persian reverse | Enabled                     |
+
+---
+
+# Limitations
+
+Tablokhan is an OCR system focused on Persian and Arabic text in image inputs.
+
+Performance can vary depending on:
+
+* image resolution
+* text size
+* background complexity
+* image quality
+* text orientation
+* detection quality
+* hardware and ONNX Runtime provider
+
+The reported processing time is environment-dependent and should not be interpreted as a fixed benchmark.
+
+---
+
+# Repository & Demo
+
+GitHub:
+
+**[https://github.com/amre-sen/Tablokhan](https://github.com/amre-sen/Tablokhan)**
+
+Hugging Face:
+
+**[https://huggingface.co/spaces/amre-sen/Tablokhan](https://huggingface.co/spaces/amre-sen/Tablokhan)**
+
+---
+
+# License
 
 Apache License 2.0
+
+```
+
+یک نکته را حتماً قبل از commit نهایی اصلاح کن: `config.py` فعلی روی GitHub هنوز `CROP_MARGIN = 10` دارد، بنابراین بعد از commit مقدار `15`، README بالا را commit کن تا مستندات و کد دقیقاً یکسان باشند. :contentReference[oaicite:19]{index=19}
+```
