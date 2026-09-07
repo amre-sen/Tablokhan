@@ -31,7 +31,7 @@ DET_RESIZE_LONG = int(os.getenv("OCR_DET_RESIZE_LONG", "640"))
 PADDING = int(os.getenv("OCR_PADDING", "0"))
 
 # --- Crop Parameter ---------------------------------------------------------
-CROP_MARGIN = int(os.getenv("OCR_CROP_MARGIN", "10"))
+CROP_MARGIN = int(os.getenv("OCR_CROP_MARGIN", "15"))
 
 # --- Recognition Shape ------------------------------------------------------
 REC_HEIGHT = int(os.getenv("OCR_REC_HEIGHT", "48"))
