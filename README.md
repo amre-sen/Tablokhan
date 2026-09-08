@@ -2,6 +2,11 @@
 # Tablokhan — Persian & Arabic OCR
 
 A lightweight OCR system for detecting and recognizing Persian and Arabic text from images.
+## 🚀 Live Demo
+
+[Try Tablokhan on Hugging Face Spaces](https://huggingface.co/spaces/amre-sen/Tablokhan)
+
+![Tablokhan Hugging Face Demo](screenshots/huggingface-demo.png)
 
 Tablokhan combines a PP-OCRv6-based text detector with PP-OCRv5 Mobile text recognition, using ONNX Runtime as the common inference backend.
 
