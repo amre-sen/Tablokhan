@@ -516,12 +516,7 @@ Tablokhan/
 │   └── index.html
 │
 ├── models/
-│   ├── detection/
-│   │   └── PP-OCRv6_medium_FT.onnx
-│   │
-│   └── recognition/
-│       ├── inference.onnx
-│       └── inference.yml
+│   └── README.txt
 │
 ├── reading_order.py
 ├── main.py
